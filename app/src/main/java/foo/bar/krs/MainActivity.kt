@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.view.View
-import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
 import io.ktor.network.selector.ActorSelectorManager
 import io.ktor.network.sockets.*
@@ -67,8 +66,13 @@ class MainActivity : AppCompatActivity() {
 @KtorExperimentalAPI
 class SocketStream(private val host: String, private val port: Int, private val dispatcher: CoroutineDispatcher) {
 
+    companion object {
+        const val BUFFER_SIZE = 4096
+    }
+
     private lateinit var writeJob: Job
     private lateinit var readJob: Job
+
     private val connected: AtomicBoolean = AtomicBoolean(false)
 
     private lateinit var socket: Socket
@@ -78,6 +82,7 @@ class SocketStream(private val host: String, private val port: Int, private val 
     private var writeData = ByteArray(BUFFER_SIZE)
     private var readData = ByteArray(BUFFER_SIZE)
 
+    //never called
     private val ceh = CoroutineExceptionHandler { coroutineContext, throwable ->
         println("CEH -> cc -> $coroutineContext | ex: $throwable")
         coroutineContext.cancel(kotlinx.coroutines.CancellationException("disconnect"))
@@ -87,7 +92,15 @@ class SocketStream(private val host: String, private val port: Int, private val 
     private suspend fun writeTask(scope: CoroutineScope) {
         while (scope.isActive) {
             if(!output.isClosedForWrite) {
-                output.writeAvailable(writeData, 0, output.availableForWrite)
+
+                //this try catch doesn't catch the socket exception when connection aborted
+                //with normal Dispatchers.IO
+                try {
+                    output.writeAvailable(writeData, 0, output.availableForWrite)
+                } catch (cause: Throwable) {
+                    println("connection error: $cause")
+                }
+
             } else {
                 println("WRITE ERROR: output closed")
                 disconnect()
@@ -104,10 +117,6 @@ class SocketStream(private val host: String, private val port: Int, private val 
                 disconnect()
             }
         }
-    }
-
-    companion object {
-        const val BUFFER_SIZE = 4096
     }
 
     fun connectAsync() {
@@ -138,7 +147,6 @@ class SocketStream(private val host: String, private val port: Int, private val 
 
     }
 
-
     private fun disconnect() {
         println("disconnect(): ${Thread.currentThread()}")
         connected.set(false)
@@ -152,6 +160,8 @@ class SocketStream(private val host: String, private val port: Int, private val 
     }
 }
 
+//This function based on bugfix in Ktor Websocket client: https://github.com/ktorio/ktor/commit/cfd2a841a411e9f4116361e131e0717f38dafe9b
+//Original issue: https://github.com/ktorio/ktor/issues/1237
 @KtorExperimentalAPI
 internal fun fixedThreadPoolDispatcher(
     threadCount: Int,
@@ -164,6 +174,7 @@ internal fun fixedThreadPoolDispatcher(
                 isDaemon = true
                 name = "${threadName}-thread-pool-%d ".format(threadsNum.getAndIncrement())
 
+                //This is the only place where we can catch the exception/error
                 setUncaughtExceptionHandler { t: Thread, e: Throwable ->
                     println("UEH -> tread -> ${t.name} | ex: $e")
                 }
